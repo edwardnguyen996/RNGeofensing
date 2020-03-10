@@ -16,6 +16,7 @@
 
 package com.rn59;
 
+import android.annotation.SuppressLint;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
@@ -23,18 +24,40 @@ import android.content.Context;
 import android.content.Intent;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
+import android.location.Location;
+import android.media.AudioAttributes;
+import android.preference.PreferenceManager;
 import android.os.Build;
+
+import androidx.annotation.NonNull;
 import androidx.core.app.JobIntentService;
 import androidx.core.app.NotificationCompat;
 import androidx.core.app.TaskStackBuilder;
+
+import android.os.PowerManager;
 import android.text.TextUtils;
 import android.util.Log;
 
+import com.google.android.gms.location.FusedLocationProviderClient;
 import com.google.android.gms.location.Geofence;
 import com.google.android.gms.location.GeofencingEvent;
+import com.google.android.gms.location.LocationServices;
+import com.google.android.gms.tasks.OnCompleteListener;
+import com.google.android.gms.tasks.Task;
 
+import org.json.JSONObject;
+
+import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
+import java.util.Random;
+
+import okhttp3.Call;
+import okhttp3.Callback;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.Response;
 
 /**
  * Listener for geofence transition changes.
@@ -49,7 +72,21 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
 
     private static final String TAG = "GeofenceTransitionsIS";
 
-    private static final String CHANNEL_ID = "channel_01";
+    private static final String CHANNEL_ID = "relocare";
+
+    private static final String LAST_DETECTED_COUNTRY_KEY = "LAST_DETECTED_COUNTRY_KEY";
+
+    FusedLocationProviderClient mFusedLocationClient;
+
+    final static String OpenAppFromLocalNotificationActionName = "OPEN_APP_FROM_LOCAL_NOTIFICATION";
+
+    String countryNames[] = new String[] { "Denmark", "Austria", "Belgium", "Bulgaria", "Croatia", "Republic of Cyprus",
+            "Czech Republic", "Estonia", "Finland", "France", "Germany", "Greece", "Hungary", "Ireland", "Italy", "Latvia",
+            "Lithuania", "Luxembourg", "Netherlands", "Poland", "Portugal", "Romania", "Slovakia", "Slovenia", "Spain",
+            "Sweden", "United Kingdom", };
+
+    String availableGeoApiUserNames[] = new String[] { "pzcapworks", "relocare", "relocare2", "relocare3", "relocare4",
+            "relocare5" };
 
     /**
      * Convenience method for enqueuing work in to this service.
@@ -63,6 +100,7 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
      * @param intent sent by Location Services. This Intent is provided to Location
      *               Services (inside a PendingIntent) when addGeofences() is called.
      */
+    @SuppressLint("MissingPermission")
     @Override
     protected void onHandleWork(Intent intent) {
         GeofencingEvent geofencingEvent = GeofencingEvent.fromIntent(intent);
@@ -72,6 +110,8 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
             Log.e(TAG, errorMessage);
             return;
         }
+
+        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(getApplicationContext());
 
         // Get the transition type.
         int geofenceTransition = geofencingEvent.getGeofenceTransition();
@@ -87,13 +127,102 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
             String geofenceTransitionDetails = getGeofenceTransitionDetails(geofenceTransition,
                     triggeringGeofences);
 
-            // Send notification and log the transition details.
-            sendNotification(geofenceTransitionDetails);
-            Log.i(TAG, geofenceTransitionDetails);
+            Random randomGeoApiUser = new Random();
+            int randomGeoApiUsernameIndex = randomGeoApiUser.nextInt(availableGeoApiUserNames.length);
+            String geoApiUsername = availableGeoApiUserNames[randomGeoApiUsernameIndex];
+            Log.d("Geo username", geoApiUsername);
+
+            OkHttpClient client = new OkHttpClient();
+
+            mFusedLocationClient.getLastLocation().addOnCompleteListener(
+                new OnCompleteListener<Location>() {
+                    @Override
+                    public void onComplete(@NonNull Task<Location> task) {
+                        Location location = task.getResult();
+                        if (location != null) {
+                            Log.d("CURRENT LAT", String.valueOf(location.getLatitude()));
+                            Log.d("CURRENT LNG", String.valueOf(location.getLongitude()));
+
+                            String url = "http://api.geonames.org/countryCodeJSON?lat=" + location.getLatitude() + "&lng="
+                                    + location.getLongitude() + "&username=" + geoApiUsername;
+                            Request request = new Request.Builder().url(url).build();
+                            client.newCall(request).enqueue(new Callback() {
+                                @Override
+                                public void onFailure(Call call, IOException e) {
+                                    e.printStackTrace();
+                                }
+
+                                @Override
+                                public void onResponse(Call call, Response response) throws IOException {
+                                    if (response.isSuccessful()) {
+                                        try {
+                                            final String countryResponse = response.body().string().toString();
+                                            JSONObject countryAsJSON = new JSONObject(countryResponse);
+                                            Log.d("Country", countryResponse);
+                                            String countryName = countryAsJSON.getString("countryName");
+                                            String countryCode = countryAsJSON.getString("countryCode");
+
+                                            String lastDetectedCountryName = PreferenceManager
+                                                    .getDefaultSharedPreferences(getApplicationContext())
+                                                    .getString(LAST_DETECTED_COUNTRY_KEY, "NULL");
+
+                                            if (countryName != null && !countryName.isEmpty() && !countryName.equals(lastDetectedCountryName)) {
+                                                boolean contains = Arrays.asList(countryNames).contains(countryName);
+                                                if (contains) {
+                                                    PreferenceManager
+                                                            .getDefaultSharedPreferences(getApplicationContext())
+                                                            .edit()
+                                                            .putString(LAST_DETECTED_COUNTRY_KEY, countryName).apply();
+                                                    String flag = convertCountryCodeToFlag(countryCode);
+                                                    PowerManager pm = (PowerManager) getApplicationContext().getSystemService(Context.POWER_SERVICE);
+                                                    boolean isScreenOn = Build.VERSION.SDK_INT >= 20 ? pm.isInteractive() : pm.isScreenOn(); // check if
+                                                    // screen
+                                                    // is on
+                                                    if (!isScreenOn) {
+                                                        PowerManager.WakeLock wl = pm.newWakeLock(
+                                                                PowerManager.SCREEN_DIM_WAKE_LOCK | PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                                                                "relocare:notificationLock");
+                                                        wl.acquire(10000); // set your time in milliseconds
+                                                    }
+                                                    pushNotification("You are entering " + countryName + " " + flag,
+                                                            "If this is a business trip, tap to confirm.");
+
+                                                    MainActivity.getInstance().addGeofencesButtonHandler();
+                                                }
+                                                else {
+                                                    String flag = convertCountryCodeToFlag(countryCode);
+                                                    pushNotification("You are entering " + countryName + " " + flag,
+                                                            "If this is a business trip, tap to confirm.");
+
+                                                    MainActivity.getInstance().addGeofencesButtonHandler();
+                                                }
+                                            }
+                                        } catch (Exception e) {
+                                            e.printStackTrace();
+                                        }
+                                    }
+                                }
+                            });
+                            Log.i(TAG, geofenceTransitionDetails);
+                        }
+                    }
+                }
+            );
         } else {
             // Log the error.
             Log.e(TAG, getString(R.string.geofence_transition_invalid_type, geofenceTransition));
         }
+    }
+
+    private String convertCountryCodeToFlag(final String countryCode) {
+        int flagOffset = 0x1F1E6;
+        int asciiOffset = 0x41;
+
+        int firstChar = Character.codePointAt(countryCode, 0) - asciiOffset + flagOffset;
+        int secondChar = Character.codePointAt(countryCode, 1) - asciiOffset + flagOffset;
+
+        String flag = new String(Character.toChars(firstChar)) + new String(Character.toChars(secondChar));
+        return flag;
     }
 
     /**
@@ -117,6 +246,34 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
         String triggeringGeofencesIdsString = TextUtils.join(", ",  triggeringGeofencesIdsList);
 
         return geofenceTransitionString + ": " + triggeringGeofencesIdsString;
+    }
+
+    public void pushNotification(final String title, final String description) {
+
+        NotificationChannel mChannel;
+        NotificationManager mNotificationManager = (NotificationManager) getSystemService(Context.NOTIFICATION_SERVICE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            mChannel = new NotificationChannel(CHANNEL_ID, "Social Security App",
+                    NotificationManager.IMPORTANCE_HIGH);
+            mChannel.setLightColor(0xD901518e);
+            mChannel.enableLights(true);
+            mChannel.setDescription("Description");
+            AudioAttributes audioAttributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                    .build();
+            if (mNotificationManager != null) {
+                mNotificationManager.createNotificationChannel(mChannel);
+            }
+        }
+        Context context = getApplicationContext();
+        Intent notificationIntent = new Intent(context, MainActivity.class);
+        notificationIntent.setAction(OpenAppFromLocalNotificationActionName);
+        notificationIntent.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent intent = PendingIntent.getActivity(context, 0, notificationIntent, 0);
+        NotificationCompat.Builder mBuilder = new NotificationCompat.Builder(context, CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_launcher).setContentTitle(title).setContentText(description)
+                .setContentIntent(intent).setColor(0xD901518e).setAutoCancel(true).setChannelId(CHANNEL_ID);
+        mNotificationManager.cancel(9999);
+        mNotificationManager.notify(9999, mBuilder.build());
     }
 
     /**
@@ -178,7 +335,7 @@ public class GeofenceTransitionsJobIntentService extends JobIntentService {
         builder.setAutoCancel(true);
 
         // Issue the notification
-        mNotificationManager.notify(0, builder.build());
+        mNotificationManager.notify(9999, builder.build());
     }
 
     /**

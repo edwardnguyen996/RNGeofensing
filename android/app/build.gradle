@@ -148,11 +148,14 @@ android {
 
 dependencies {
     implementation project(':@react-native-community_async-storage')
-    implementation project(':react-native-permissions')
     implementation project(':react-native-event-bridge')
     androidTestImplementation('androidx.test.espresso:espresso-core:3.1.1', {
         exclude group: 'com.android.support', module: 'support-annotations'
     })
+    implementation 'com.squareup.okhttp3:okhttp:3.13.1'
+    implementation('com.googlecode.json-simple:json-simple:1.1.1') {
+        exclude group: 'junit', module: 'junit'
+    }
     implementation fileTree(dir: "libs", include: ["*.jar"])
     implementation "com.android.support:appcompat-v7:${rootProject.ext.supportLibVersion}"
     implementation 'com.google.android.material:material:1.1.0'

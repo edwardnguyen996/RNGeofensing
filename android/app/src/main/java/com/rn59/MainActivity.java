@@ -16,37 +16,34 @@ import androidx.core.app.ActivityCompat;
 import android.util.Log;
 import com.facebook.react.ReactActivity;
 import android.view.View;
-import android.widget.Toast;
 
 import com.google.android.gms.location.Geofence;
 import com.google.android.gms.location.GeofencingClient;
 import com.google.android.gms.location.GeofencingRequest;
 import com.google.android.gms.location.LocationServices;
-import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.tasks.OnCompleteListener;
 import com.google.android.gms.tasks.Task;
 
 import net.mischneider.MSREventBridgeEventReceiver;
 import net.mischneider.MSREventBridgeReceiverCallback;
 
+import com.google.android.gms.location.FusedLocationProviderClient;
+import android.location.Location;
+import android.annotation.SuppressLint;
 
 import java.util.ArrayList;
-import java.util.Map;
 
-/**
- * Demonstrates how to create and remove geofences using the GeofencingApi. Uses an IntentService
- * to monitor geofence transitions and creates notifications whenever a device enters or exits
- * a geofence.
- * <p>
- * This sample requires a device's Location settings to be turned on. It also requires
- * the ACCESS_FINE_LOCATION permission, as specified in AndroidManifest.xml.
- * <p>
- */
+import java.lang.System;
+
 public class MainActivity extends ReactActivity implements OnCompleteListener<Void>, MSREventBridgeEventReceiver {
+
+    private static MainActivity instance;
 
     private static final String TAG = MainActivity.class.getSimpleName();
 
     private static final int REQUEST_PERMISSIONS_REQUEST_CODE = 34;
+
+    FusedLocationProviderClient mFusedLocationClient;
 
     /**
      * Tracks whether the user requested to add or remove geofences, or to do neither.
@@ -87,10 +84,11 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
         // Initially set the PendingIntent used in addGeofences() and removeGeofences() to null.
         mGeofencePendingIntent = null;
 
-        // Get the geofences used. Geofence data is hard coded in this sample.
-        populateGeofenceList();
+        mFusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
 
         mGeofencingClient = LocationServices.getGeofencingClient(this);
+
+        instance = this;
     }
 
     @Override
@@ -123,6 +121,10 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
         return;
     }
 
+    public static MainActivity getInstance() {
+        return instance;
+    }
+
     /**
      * Builds and returns a GeofencingRequest. Specifies the list of geofences to be monitored.
      * Also specifies how the geofence notifications are initially triggered.
@@ -146,14 +148,49 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
      * Adds geofences, which sets alerts to be notified when the device enters or exits one of the
      * specified geofences. Handles the success or failure results returned by addGeofences().
      */
+    @SuppressLint("MissingPermission")
     public void addGeofencesButtonHandler() {
         if (!checkPermissions()) {
             mPendingGeofenceTask = PendingGeofenceTask.ADD;
             requestPermissions();
             return;
         }
-        addGeofences();
-        showSnackbar(getString(R.string.started_to_tracking_genfensing));
+        mFusedLocationClient.getLastLocation().addOnCompleteListener(
+            new OnCompleteListener<Location>() {
+                @Override
+                public void onComplete(@NonNull Task<Location> task) {
+                    Location location = task.getResult();
+                    if (location != null) {
+                        Log.d("CURRENT LAT", String.valueOf(location.getLatitude()));
+                        Log.d("CURRENT LNG", String.valueOf(location.getLongitude()));
+
+                        mGeofenceList.clear();
+
+                        mGeofenceList.add(new Geofence.Builder()
+                            // Set the request ID of the geofence. This is a string to identify this
+                            // geofence.
+                            .setRequestId(String.valueOf(System.currentTimeMillis()))
+                            // Set the circular region of this geofence.
+                            .setCircularRegion(
+                                    location.getLatitude(),
+                                    location.getLongitude(),
+                                    Constants.GEOFENCE_RADIUS_IN_METERS
+                            )
+                            // Set the expiration duration of the geofence. This geofence gets automatically
+                            // removed after this period of time.
+                            .setExpirationDuration(Constants.GEOFENCE_EXPIRATION_IN_MILLISECONDS)
+                            // Set the transition types of interest. Alerts are only generated for these
+                            // transition. We track entry and exit transitions in this sample.
+                            .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_EXIT)
+                            // Create the geofence.
+                            .build());
+
+                        addGeofences();
+                        showSnackbar(getString(R.string.started_to_tracking_genfensing));
+                    }
+                }
+            }
+        );
     }
 
     /**
@@ -195,7 +232,6 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
             showSnackbar(getString(R.string.insufficient_permissions));
             return;
         }
-
         mGeofencingClient.removeGeofences(getGeofencePendingIntent()).addOnCompleteListener(this);
     }
 
@@ -209,11 +245,6 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
         mPendingGeofenceTask = PendingGeofenceTask.NONE;
         if (task.isSuccessful()) {
             updateGeofencesAdded(!getGeofencesAdded());
-            setButtonsEnabledState();
-
-            int messageId = getGeofencesAdded() ? R.string.geofences_added :
-                    R.string.geofences_removed;
-            Toast.makeText(this, getString(messageId), Toast.LENGTH_SHORT).show();
         } else {
             // Get the status code for the error and log it using a user-friendly message.
             String errorMessage = GeofenceErrorMessages.getErrorString(this, task.getException());
@@ -238,48 +269,6 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
         // addGeofences() and removeGeofences().
         mGeofencePendingIntent = PendingIntent.getBroadcast(this, 0, intent, PendingIntent.FLAG_UPDATE_CURRENT);
         return mGeofencePendingIntent;
-    }
-
-    /**
-     * This sample hard codes geofence data. A real app might dynamically create geofences based on
-     * the user's location.
-     */
-    private void populateGeofenceList() {
-        for (Map.Entry<String, LatLng> entry : Constants.BAY_AREA_LANDMARKS.entrySet()) {
-
-            mGeofenceList.add(new Geofence.Builder()
-                    // Set the request ID of the geofence. This is a string to identify this
-                    // geofence.
-                    .setRequestId(entry.getKey())
-
-                    // Set the circular region of this geofence.
-                    .setCircularRegion(
-                            entry.getValue().latitude,
-                            entry.getValue().longitude,
-                            Constants.GEOFENCE_RADIUS_IN_METERS
-                    )
-
-                    // Set the expiration duration of the geofence. This geofence gets automatically
-                    // removed after this period of time.
-                    .setExpirationDuration(Constants.GEOFENCE_EXPIRATION_IN_MILLISECONDS)
-
-                    // Set the transition types of interest. Alerts are only generated for these
-                    // transition. We track entry and exit transitions in this sample.
-                    .setTransitionTypes(Geofence.GEOFENCE_TRANSITION_ENTER |
-                            Geofence.GEOFENCE_TRANSITION_EXIT)
-
-                    // Create the geofence.
-                    .build());
-        }
-    }
-
-    /**
-     * Ensures that only one button is enabled at any time. The Add Geofences button is enabled
-     * if the user hasn't yet added geofences. The Remove Geofences button is enabled if the
-     * user has added geofences.
-     */
-    private void setButtonsEnabledState() {
-
     }
 
     /**
@@ -360,15 +349,15 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
         if (shouldProvideRationale) {
             Log.i(TAG, "Displaying permission rationale to provide additional context.");
             showSnackbar(R.string.permission_rationale, android.R.string.ok,
-                    new View.OnClickListener() {
-                        @Override
-                        public void onClick(View view) {
-                            // Request permission
-                            ActivityCompat.requestPermissions(MainActivity.this,
-                                    new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
-                                    REQUEST_PERMISSIONS_REQUEST_CODE);
-                        }
-                    });
+                new View.OnClickListener() {
+                    @Override
+                    public void onClick(View view) {
+                        // Request permission
+                        ActivityCompat.requestPermissions(MainActivity.this,
+                                new String[]{Manifest.permission.ACCESS_FINE_LOCATION},
+                                REQUEST_PERMISSIONS_REQUEST_CODE);
+                    }
+                });
         } else {
             Log.i(TAG, "Requesting permission");
             // Request permission. It's possible this can be auto answered if device policy
@@ -396,32 +385,21 @@ public class MainActivity extends ReactActivity implements OnCompleteListener<Vo
                 Log.i(TAG, "Permission granted.");
                 performPendingGeofenceTask();
             } else {
-                // Permission denied.
-
-                // Notify the user via a SnackBar that they have rejected a core permission for the
-                // app, which makes the Activity useless. In a real app, core permissions would
-                // typically be best requested during a welcome-screen flow.
-
-                // Additionally, it is important to remember that a permission might have been
-                // rejected without asking the user for permission (device policy or "Never ask
-                // again" prompts). Therefore, a user interface affordance is typically implemented
-                // when permissions are denied. Otherwise, your app could appear unresponsive to
-                // touches or interactions which have required permissions.
                 showSnackbar(R.string.permission_denied_explanation, R.string.settings,
-                        new View.OnClickListener() {
-                            @Override
-                            public void onClick(View view) {
-                                // Build intent that displays the App settings screen.
-                                Intent intent = new Intent();
-                                intent.setAction(
-                                        Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
-                                Uri uri = Uri.fromParts("package",
-                                        BuildConfig.APPLICATION_ID, null);
-                                intent.setData(uri);
-                                intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                                startActivity(intent);
-                            }
-                        });
+                    new View.OnClickListener() {
+                        @Override
+                        public void onClick(View view) {
+                            // Build intent that displays the App settings screen.
+                            Intent intent = new Intent();
+                            intent.setAction(
+                                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                            Uri uri = Uri.fromParts("package",
+                                    BuildConfig.APPLICATION_ID, null);
+                            intent.setData(uri);
+                            intent.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                            startActivity(intent);
+                        }
+                    });
                 mPendingGeofenceTask = PendingGeofenceTask.NONE;
             }
         }
